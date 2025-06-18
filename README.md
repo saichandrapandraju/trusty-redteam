@@ -1,4 +1,4 @@
-# Universal API for LLM Red Teaming (Medium Version)
+# Universal API for LLM Red Teaming
 
 A streamlined API for LLM vulnerability testing.
 
