@@ -1,0 +1,94 @@
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+from enum import Enum
+from datetime import datetime
+import uuid
+
+# Enums
+class AttackType(str, Enum):
+    PROMPT_INJECTION = "prompt_injection"
+    JAILBREAK = "jailbreak"
+    TOXICITY = "toxicity"
+    BIAS = "bias"
+    DOS = "denial_of_service"
+    # MISINFORMATION = "misinformation"
+    # DATA_LEAKAGE = "data_leakage"
+    CUSTOM = "custom"
+
+class Severity(str, Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+class ScanProfile(str, Enum):
+    QUICK = "quick"
+    STANDARD = "standard"
+    COMPREHENSIVE = "comprehensive"
+    CUSTOM = "custom"
+
+class RequestStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+# Models
+class ModelInfo(BaseModel):
+    """Target model information"""
+    model_name: str
+    endpoint: str
+    api_key: Optional[str] = Field(None, exclude=True)
+    provider: str = "openai.OpenAICompatible"  # vLLM is OpenAI-compatible
+    
+class TestResult(BaseModel):
+    """Individual test result"""
+    result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    probe: str
+    attack_type: AttackType
+    prompt: str
+    response: str
+    vulnerable: bool
+    severity: Optional[Severity] = None
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    evidence: List[str] = []
+    execution_time: float = 0.0
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    metadata: Dict[str, Any] = {}
+
+class ScanRequest(BaseModel):
+    """Scan request"""
+    model: ModelInfo
+    scan_profile: ScanProfile = ScanProfile.QUICK
+    custom_probes: Optional[List[str]] = None
+    plugin: str = "garak"
+
+class ScanStatus(BaseModel):
+    """Scan status response"""
+    scan_id: str
+    status: RequestStatus
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    progress: Dict[str, Any] = {}
+    summary: Dict[str, Any] = {}
+
+class ScanResult(BaseModel):
+    """Complete scan result"""
+    scan_id: str
+    model: ModelInfo
+    scan_profile: str
+    started_at: datetime
+    completed_at: datetime
+    duration_seconds: float
+    total_probes: int
+    vulnerabilities_found: int
+    severity_breakdown: Dict[str, int]
+    results: List[TestResult]
+
+class PluginInfo(BaseModel):
+    """Plugin information"""
+    name: str
+    version: str
+    description: str
+    supported_attacks: List[AttackType]
+    features: List[str]

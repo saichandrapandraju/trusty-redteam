@@ -1,0 +1,6 @@
+__pycache__
+logs/
+tmp/
+*.egg-info
+.env
+.DS_Store
