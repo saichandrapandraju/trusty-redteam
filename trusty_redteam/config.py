@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     plugin_configs: Dict[str, Dict[str, Any]] = {
         "garak": {
             "working_dir": tmp_dir / "garak",
-            "parallel_probes": 16,
+            "parallel_probes": 8,
             "timeout": 60*60*3
         }
     }

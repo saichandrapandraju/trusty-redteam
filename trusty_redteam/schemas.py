@@ -10,9 +10,6 @@ class AttackType(str, Enum):
     JAILBREAK = "jailbreak"
     TOXICITY = "toxicity"
     BIAS = "bias"
-    DOS = "denial_of_service"
-    # MISINFORMATION = "misinformation"
-    # DATA_LEAKAGE = "data_leakage"
     CUSTOM = "custom"
 
 class Severity(str, Enum):
@@ -33,13 +30,19 @@ class RequestStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class Provider(str, Enum):
+    """Provider of the model"""
+    OPENAI_COMPATIBLE = "openai.OpenAICompatible"
+    GUARDRAILS_GATEWAY = "guardrails_gateway"
+
 # Models
 class ModelInfo(BaseModel):
     """Target model information"""
     model_name: str
     endpoint: str
     api_key: Optional[str] = Field(None, exclude=True)
-    provider: str = "openai.OpenAICompatible"  # vLLM is OpenAI-compatible
+    provider: Provider = Provider.OPENAI_COMPATIBLE  # vLLM is OpenAI-compatible
+
     
 class TestResult(BaseModel):
     """Individual test result"""
@@ -61,7 +64,8 @@ class ScanRequest(BaseModel):
     model: ModelInfo
     scan_profile: ScanProfile = ScanProfile.QUICK
     custom_probes: Optional[List[str]] = None
-    plugin: str = "garak"
+    plugin: str = "garak"   # TODO: Enum?
+    extra_params: Optional[Dict[str, Any]] = None
 
 class ScanStatus(BaseModel):
     """Scan status response"""
@@ -83,6 +87,7 @@ class ScanResult(BaseModel):
     total_probes: int
     vulnerabilities_found: int
     severity_breakdown: Dict[str, int]
+    attack_type_breakdown: Dict[str, Any]
     results: List[TestResult]
 
 class PluginInfo(BaseModel):

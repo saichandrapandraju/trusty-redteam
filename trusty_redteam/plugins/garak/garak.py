@@ -11,6 +11,8 @@ from trusty_redteam.schemas import (
 )
 import logging
 from trusty_redteam.config import settings
+from trusty_redteam.schemas import Provider
+import trusty_redteam.plugins.garak.guardrails_gateway_generator as guardrails_gateway_generator
 import os
 
 logger = logging.getLogger(__name__)
@@ -21,19 +23,19 @@ class GarakPlugin(BasePlugin):
     SCAN_PROFILES = {
         "quick": {
             "probes": [
-                "dan.Dan_11_0",
-                "encoding.InjectBase64",
-                "promptinject.HijackHateHumans"
+                "continuation.ContinueSlursReclaimedSlurs", # BIAS
+                "promptinject.HijackHateHumans", # PROMPT_INJECTION
+                "realtoxicityprompts.RTPProfanity", # TOXICITY
             ],
             "timeout": 60*60*0.5
         },
         "standard": {
             "probes": [
-                "dan",
-                "encoding",
-                "promptinject",
-                "realtoxicityprompts",
-                "continuation"
+                "dan", # JAILBREAK
+                "encoding", # PROMPT_INJECTION
+                "promptinject", # PROMPT_INJECTION
+                "realtoxicityprompts", # TOXICITY
+                "continuation", # BIAS
             ],
             "timeout": 60*60*2
         },
@@ -72,13 +74,22 @@ class GarakPlugin(BasePlugin):
         self,
         model: ModelInfo,
         scan_profile: str = "quick",
-        custom_probes: List[str] = None
+        custom_probes: List[str] = None,
+        extra_params: Dict[str, Any] = None
     ) -> AsyncIterator[TestResult]:
         """Run Garak scan and yield results in real-time"""
+
+        model = self._validate_model(model)
         
-        # Get profile
-        profile = self.SCAN_PROFILES.get(scan_profile, self.SCAN_PROFILES["quick"])
-        probes = custom_probes if custom_probes else profile["probes"]
+        # Get probes
+        profile = self.SCAN_PROFILES.get(scan_profile)
+        if not custom_probes:
+            if not profile:
+                raise ValueError(f"Either valid scan profile or custom probes must be provided. "
+                                 f"Valid profiles are: {list(self.SCAN_PROFILES.keys())}")
+            probes = profile["probes"]
+        else:
+            probes = custom_probes
         
         # Create temp directory for this scan
         # FIXME: Elegantly handle this with a 'with' statement..?
@@ -88,26 +99,31 @@ class GarakPlugin(BasePlugin):
 
         # Run Garak
         report_prefix = scan_path / "scan"
-        generator_options = {
-            "openai": {
-                "OpenAICompatible": {
-                    "uri": model.endpoint,
-                    "api_key": model.api_key if model.api_key else os.getenv("OPENAICOMPATIBLE_API_KEY", "DUMMY"),
-                    # TODO: Expose sampling params.
-                    "temperature": 0.6,
-                    "top_p": 1.0,
-                    "suppressed_params": ["n", "frequency_penalty", "presence_penalty"]
-                }
-            }
-        }
+        generator_options = self._get_generator_options(model, extra_params)
+
         cmd = [
-            self.garak_path,
-            "--model_type", model.provider,
-            "--model_name", model.model_name,
+            self.garak_path
+        ]
+        if model.provider == Provider.OPENAI_COMPATIBLE:
+            cmd.extend([
+                "--model_type", model.provider,
+                "--model_name", model.model_name
+            ])
+        elif model.provider == Provider.GUARDRAILS_GATEWAY:
+            cmd.extend([
+                "--model_type", "function.Single",
+                "--model_name", f"{guardrails_gateway_generator.__name__}#{model.provider.value}",
+                "--generations", "1" #TODO: Check if we can pass 'n' through gateway to enable multiple generations
+            ])
+        else:
+            raise ValueError(self._get_invalid_provider_error_message(model.provider))
+        
+        cmd.extend([
             "--generator_options", json.dumps(generator_options),
             "--report_prefix", str(report_prefix),
             "--parallel_attempts", str(self.config.get("parallel_probes", 5))
-        ]
+        ])
+        
         
         # Add probes
         if probes != ["all"]:
@@ -115,7 +131,7 @@ class GarakPlugin(BasePlugin):
 
         # Start Garak process
         logger.info(f"Running Garak command: {' '.join(cmd)}")
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -123,12 +139,41 @@ class GarakPlugin(BasePlugin):
             cwd=str(scan_path)
         )
         
+        # Monitor stdout/stderr
+        # async def log_process_output():
+        #     while process.returncode is None:
+        #         if process.stdout:
+        #             try:
+        #                 line = await asyncio.wait_for(process.stdout.readline(), timeout=1.0)
+        #                 if line:
+        #                     logger.info(f"GARAK STDOUT: {line.decode().strip()}")
+        #             except asyncio.TimeoutError:
+        #                 pass
+                
+        #         if process.stderr:
+        #             try:
+        #                 line = await asyncio.wait_for(process.stderr.readline(), timeout=1.0)
+        #                 if line:
+        #                     logger.error(f"GARAK STDERR: {line.decode().strip()}")
+        #             except asyncio.TimeoutError:
+        #                 pass
+                
+        #         await asyncio.sleep(0.1)
+        
+        # # Start output monitoring
+        # output_task = asyncio.create_task(log_process_output())
+
         # Monitor report file and yield results in real-time
         report_file = scan_path / "scan.report.jsonl"
-        self.last_report_file = report_file
+        timeout = None
+        if profile:
+            timeout = profile.get("timeout", None)
+        if timeout is None:
+            timeout = settings.plugin_configs["garak"]["timeout"]
+        
         try:
             async for result in self._monitor_report_file(
-                report_file, model, process, profile.get("timeout", 60*60*3)
+                report_file, model, process, timeout
             ):
                 yield result
                 
@@ -141,6 +186,71 @@ class GarakPlugin(BasePlugin):
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+
+    def _get_invalid_provider_error_message(self, provider: Provider) -> str:
+        """Get provider error message"""
+        if provider not in [Provider.OPENAI_COMPATIBLE, Provider.GUARDRAILS_GATEWAY]:
+            return f"Unsupported provider: {provider}. " \
+                   f"Only {Provider.OPENAI_COMPATIBLE} and {Provider.GUARDRAILS_GATEWAY} are supported."
+        return ""
+
+    def _validate_model(self, model: ModelInfo) -> ModelInfo:
+        """Validate model"""
+        if model.provider == Provider.OPENAI_COMPATIBLE:
+            if not model.endpoint or model.endpoint == "" or not model.endpoint.startswith("http"):
+                raise ValueError("Valid endpoint is required for OpenAI-compatible models")
+            if model.endpoint.endswith("/"):
+                model.endpoint = model.endpoint[:-1]
+            if not model.model_name or model.model_name == "":
+                raise ValueError("Valid model name is required for OpenAI-compatible models")
+        elif model.provider == Provider.GUARDRAILS_GATEWAY:
+            if not model.endpoint or model.endpoint == "" or not model.endpoint.startswith("http"):
+                raise ValueError("Valid endpoint is required for Guardrails Gateway models")
+            if model.endpoint.endswith("/"):
+                model.endpoint = model.endpoint[:-1]
+            if not model.model_name or model.model_name == "":
+                raise ValueError("Valid model name is required for Guardrails Gateway models")
+        else:
+            raise ValueError(self._get_invalid_provider_error_message(model.provider))
+        return model
+
+    def _get_generator_options(self, model: ModelInfo, extra_params: Dict[str, Any] = None) -> dict:
+        """Get generator options for the model"""
+        extra_params = extra_params or {}
+        
+        if model.provider == Provider.OPENAI_COMPATIBLE:
+            generator_options = {
+                            "openai": {
+                                "OpenAICompatible": {
+                                    "uri": model.endpoint,
+                                    "model": model.model_name,
+                                    "api_key": model.api_key if model.api_key else os.getenv("OPENAICOMPATIBLE_API_KEY", "DUMMY"),
+                                    "temperature": 0.6,
+                                    "top_p": 1.0,
+                                    "suppressed_params": ["n", "frequency_penalty", "presence_penalty"]
+                                }
+                            }
+                        }
+            generator_options["openai"]["OpenAICompatible"].update(extra_params)
+        elif model.provider == Provider.GUARDRAILS_GATEWAY:
+            generator_options = {
+                            "function": {
+                                "Single": {
+                                    "name": f"{guardrails_gateway_generator.__name__}#{model.provider.value}",
+                                    "kwargs": {
+                                        "uri": model.endpoint,
+                                        "model": model.model_name,
+                                        "temperature": 0.6,
+                                        "top_p": 1.0,
+                                        "max_tokens": 60,
+                                    }
+                                }
+                            }
+                        }
+            generator_options["function"]["Single"]["kwargs"].update(extra_params)
+        else:
+            raise ValueError(self._get_invalid_provider_error_message(model.provider))
+        return generator_options
 
     async def _monitor_report_file(
         self, 
@@ -259,68 +369,6 @@ class GarakPlugin(BasePlugin):
             }
         )
 
-    # async def get_eval_entries(self, report_file: Path) -> List[dict]:
-    #     """Extract eval entries from completed report file for summary calculation"""
-    #     eval_entries = []
-        
-    #     if not report_file.exists():
-    #         return eval_entries
-            
-    #     try:
-    #         with open(report_file, 'r') as f:
-    #             for line in f:
-    #                 if not line.strip():
-    #                     continue
-                        
-    #                 try:
-    #                     entry = json.loads(line)
-    #                     if entry.get("entry_type") == "eval":
-    #                         eval_entries.append(entry)
-    #                 except json.JSONDecodeError:
-    #                     logger.warning(f"Failed to parse eval line: {line}")
-                        
-    #     except Exception as e:
-    #         logger.warning(f"Error reading eval entries: {e}")
-            
-    #     return eval_entries
-
-    # def calculate_summary_from_evals(self, eval_entries: List[dict]) -> dict:
-    #     """Calculate summary statistics from eval entries"""
-    #     if not eval_entries:
-    #         return {}
-            
-    #     total_attempts = sum(entry.get("total", 0) for entry in eval_entries)
-    #     total_passed = sum(entry.get("passed", 0) for entry in eval_entries)
-    #     total_vulnerabilities = total_attempts - total_passed
-        
-    #     # Group by probe for detailed breakdown
-    #     probe_breakdown = {}
-    #     for entry in eval_entries:
-    #         probe = entry.get("probe", "unknown")
-    #         if probe not in probe_breakdown:
-    #             probe_breakdown[probe] = {
-    #                 "total": 0,
-    #                 "passed": 0,
-    #                 "vulnerabilities": 0,
-    #                 "detectors": []
-    #             }
-    #         probe_breakdown[probe]["total"] += entry.get("total", 0)
-    #         probe_breakdown[probe]["passed"] += entry.get("passed", 0)
-    #         probe_breakdown[probe]["vulnerabilities"] = probe_breakdown[probe]["total"] - probe_breakdown[probe]["passed"]
-    #         probe_breakdown[probe]["detectors"].append({
-    #             "detector": entry.get("detector", ""),
-    #             "passed": entry.get("passed", 0),
-    #             "total": entry.get("total", 0),
-    #             "vulnerabilities": entry.get("total", 0) - entry.get("passed", 0)
-    #         })
-        
-    #     return {
-    #         "total_attempts": total_attempts,
-    #         "total_vulnerabilities": total_vulnerabilities,
-    #         "vulnerability_rate": total_vulnerabilities / total_attempts if total_attempts > 0 else 0,
-    #         "probe_breakdown": probe_breakdown
-    #     }
-
     def _calculate_severity(self, score: float) -> Severity:
         """Calculate severity from Garak result"""
         if score >= 0.7:
@@ -379,3 +427,4 @@ class GarakPlugin(BasePlugin):
                 "vLLM support via OpenAI API"
             ]
         )
+

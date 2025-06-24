@@ -9,7 +9,6 @@ import argparse
 from trusty_redteam.config import settings
 from trusty_redteam.plugin_manager import plugin_manager
 from trusty_redteam.plugins.base import BasePlugin
-from trusty_redteam.plugins.garak import GarakPlugin
 from trusty_redteam.schemas import (
     ScanRequest, ScanStatus, 
     ScanResult, RequestStatus, TestResult
@@ -108,7 +107,8 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
         async for result in plugin.run_scan(
             request.model,
             request.scan_profile.value,
-            request.custom_probes
+            request.custom_probes,
+            request.extra_params
         ):
             assert isinstance(result, TestResult), f"Expected TestResult, got {type(result)}"
             scan_data["results"].append(result)
@@ -117,17 +117,20 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
             scan_data["progress"]["total_probes"] += 1
             if result.vulnerable:
                 scan_data["progress"]["vulnerabilities"] += 1
-                
-        # # Calculate detailed summary for Garak plugin
-        # if isinstance(plugin, GarakPlugin):
-        #     eval_entries = await plugin.get_eval_entries(plugin.last_report_file)
-        #     summary = plugin.calculate_summary_from_evals(eval_entries)
-        #     scan_data["summary"] = summary
         
-        # Calculate severity breakdown
+        # Calculate severity & attack_type breakdown
         severity_breakdown = {}
+        attack_type_breakdown = {}
+
         for result in scan_data["results"]:
             result: TestResult = result
+            attack_type_breakdown[result.attack_type.value] = attack_type_breakdown.get(result.attack_type.value, {})
+            attack_type_breakdown[result.attack_type.value][result.probe] = attack_type_breakdown[result.attack_type.value].get(result.probe, {})
+            attack_type_breakdown[result.attack_type.value][result.probe]['total_probes'] = attack_type_breakdown[result.attack_type.value][result.probe].get('total_probes', 0) + 1
+            if 'vulnerabilities' not in attack_type_breakdown[result.attack_type.value][result.probe]:
+                attack_type_breakdown[result.attack_type.value][result.probe]['vulnerabilities'] = 0
+            if result.vulnerable:
+                attack_type_breakdown[result.attack_type.value][result.probe]['vulnerabilities'] += 1 
             if result.severity:
                 severity_name = result.severity.value
                 severity_breakdown[severity_name] = \
@@ -136,6 +139,7 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
         if "summary" not in scan_data:
             scan_data["summary"] = {}
         scan_data["summary"]["severity_breakdown"] = severity_breakdown
+        scan_data["summary"]["attack_type_breakdown"] = attack_type_breakdown
                 
         # Mark complete
         scan_data["status"] = RequestStatus.COMPLETED
@@ -175,6 +179,7 @@ async def get_scan_results(scan_id: str):
         raise HTTPException(400, "Scan not completed")
     
     severity_breakdown = scan_data["summary"].get("severity_breakdown", {})
+    attack_type_breakdown = scan_data["summary"].get("attack_type_breakdown", {})
     total_probes = scan_data["progress"]["total_probes"]
     vulnerabilities_found = scan_data["progress"]["vulnerabilities"]
                 
@@ -192,6 +197,7 @@ async def get_scan_results(scan_id: str):
         total_probes=total_probes,
         vulnerabilities_found=vulnerabilities_found,
         severity_breakdown=severity_breakdown,
+        attack_type_breakdown=attack_type_breakdown,
         results=scan_data["results"]
     )
 

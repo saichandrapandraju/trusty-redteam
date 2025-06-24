@@ -1,6 +1,5 @@
 from typing import Dict, Optional, List
 import importlib
-import os
 from trusty_redteam.schemas import PluginInfo
 from trusty_redteam.plugins.base import BasePlugin
 from trusty_redteam.config import settings
@@ -34,7 +33,7 @@ class PluginManager:
         try:
             # FIXME: This is a hack to find the plugin class
             # Import plugin module
-            module = importlib.import_module(f"trusty_redteam.plugins.{name}")
+            module = importlib.import_module(f"trusty_redteam.plugins.{name}.{name}")
             # Find plugin class ( FIXME: assumes it ends with 'Plugin')
             plugin_class = None
             for attr_name in dir(module):
