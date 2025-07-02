@@ -50,7 +50,7 @@ class TestResult(BaseModel):
     probe: str
     attack_type: AttackType
     prompt: str
-    response: str
+    responses: List[Optional[str]] = []
     vulnerable: bool
     severity: Optional[Severity] = None
     confidence: float = Field(0.0, ge=0.0, le=1.0)

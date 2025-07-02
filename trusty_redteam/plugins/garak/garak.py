@@ -107,7 +107,8 @@ class GarakPlugin(BasePlugin):
         if model.provider == Provider.OPENAI_COMPATIBLE:
             cmd.extend([
                 "--model_type", model.provider,
-                "--model_name", model.model_name
+                "--model_name", model.model_name,
+                "--generations", "1" # TODO: can be removed if we want to enable multiple generations per prompt
             ])
         elif model.provider == Provider.GUARDRAILS_GATEWAY:
             cmd.extend([
@@ -225,9 +226,9 @@ class GarakPlugin(BasePlugin):
                                     "uri": model.endpoint,
                                     "model": model.model_name,
                                     "api_key": model.api_key if model.api_key else os.getenv("OPENAICOMPATIBLE_API_KEY", "DUMMY"),
-                                    "temperature": 0.6,
-                                    "top_p": 1.0,
-                                    "suppressed_params": ["n", "frequency_penalty", "presence_penalty"]
+                                    # "temperature": 0.6,
+                                    # "top_p": 1.0,
+                                    "suppressed_params": ["n"]
                                 }
                             }
                         }
@@ -355,8 +356,7 @@ class GarakPlugin(BasePlugin):
                 AttackType.CUSTOM
             ),
             prompt=entry.get("prompt", ""),
-            # TODO: Handle outputs like: [null] (model returning nothing)
-            response=entry.get("outputs", [""])[0] if entry.get("outputs") else "",
+            responses=entry.get("outputs",[]),
             vulnerable=is_vulnerable,
             severity=self._calculate_severity(confidence),
             confidence=confidence,
