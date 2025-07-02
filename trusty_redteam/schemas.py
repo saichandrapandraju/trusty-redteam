@@ -17,7 +17,6 @@ class Severity(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-    INFO = "info"
 
 class ScanProfile(str, Enum):
     QUICK = "quick"
@@ -35,12 +34,19 @@ class Provider(str, Enum):
     OPENAI_COMPATIBLE = "openai.OpenAICompatible"
     GUARDRAILS_GATEWAY = "guardrails_gateway"
 
+class ProcessState(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+
 # Models
 class ModelInfo(BaseModel):
     """Target model information"""
     model_name: str
     endpoint: str
-    api_key: Optional[str] = Field(None, exclude=True)
     provider: Provider = Provider.OPENAI_COMPATIBLE  # vLLM is OpenAI-compatible
 
     
@@ -55,7 +61,7 @@ class TestResult(BaseModel):
     severity: Optional[Severity] = None
     confidence: float = Field(0.0, ge=0.0, le=1.0)
     evidence: List[str] = []
-    execution_time: float = 0.0
+    execution_time: Optional[float] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     metadata: Dict[str, Any] = {}
 
@@ -75,6 +81,9 @@ class ScanStatus(BaseModel):
     completed_at: Optional[datetime] = None
     progress: Dict[str, Any] = {}
     summary: Dict[str, Any] = {}
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+    user_action: Optional[str] = None
 
 class ScanResult(BaseModel):
     """Complete scan result"""

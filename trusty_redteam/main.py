@@ -13,6 +13,9 @@ from trusty_redteam.schemas import (
     ScanRequest, ScanStatus, 
     ScanResult, RequestStatus, TestResult
 )
+from trusty_redteam.errors import (
+    ProcessError, ValidationError, 
+    TimeoutError, ResourceError)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -103,8 +106,10 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
     scan_data = active_scans[scan_id]
     
     try:
-        # Run scan and collect results (async)
+        # Run scan and collect results
+        result_count = 0
         async for result in plugin.run_scan(
+            scan_id,
             request.model,
             request.scan_profile.value,
             request.custom_probes,
@@ -112,13 +117,14 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
         ):
             assert isinstance(result, TestResult), f"Expected TestResult, got {type(result)}"
             scan_data["results"].append(result)
+            result_count += 1
             
             # Update progress counters
-            scan_data["progress"]["total_probes"] += 1
+            scan_data["progress"]["total_probes"] = result_count
             if result.vulnerable:
                 scan_data["progress"]["vulnerabilities"] += 1
         
-        # Calculate severity & attack_type breakdown
+        # Calculate summary data
         severity_breakdown = {}
         attack_type_breakdown = {}
 
@@ -136,19 +142,57 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
                 severity_breakdown[severity_name] = \
                     severity_breakdown.get(severity_name, 0) + 1
         
-        if "summary" not in scan_data:
-            scan_data["summary"] = {}
-        scan_data["summary"]["severity_breakdown"] = severity_breakdown
-        scan_data["summary"]["attack_type_breakdown"] = attack_type_breakdown
+        scan_data["summary"] = {
+            "severity_breakdown": severity_breakdown,
+            "attack_type_breakdown": attack_type_breakdown
+        }
                 
         # Mark complete
         scan_data["status"] = RequestStatus.COMPLETED
         scan_data["completed_at"] = datetime.utcnow()
         
-    except Exception as e:
-        logger.error(f"Scan {scan_id} failed: {e}")
+        logger.info(f"Scan {scan_id} completed successfully with {result_count} results")
+        
+    except ValidationError as e:
+        logger.error(f"Scan {scan_id} failed due to validation error: {e}")
         scan_data["status"] = RequestStatus.FAILED
-        scan_data["error"] = str(e)
+        scan_data["error"] = f"Configuration error: {str(e)}"
+        scan_data["error_type"] = "validation"
+        scan_data["user_action"] = "Please check your model configuration and scan parameters"
+        
+    except ProcessError as e:
+        logger.error(f"Scan {scan_id} failed due to process error: {e}")
+        scan_data["status"] = RequestStatus.FAILED
+        scan_data["error"] = f"Process error: {str(e)}"
+        scan_data["error_type"] = "process"
+        scan_data["user_action"] = "Please ensure Garak is properly installed and your model endpoint is accessible"
+        
+    except TimeoutError as e:
+        logger.error(f"Scan {scan_id} timed out: {e}")
+        scan_data["status"] = RequestStatus.FAILED
+        scan_data["error"] = f"Scan timed out: {str(e)}"
+        scan_data["error_type"] = "timeout"
+        scan_data["user_action"] = "Consider using a shorter scan profile or increasing timeout settings"
+        
+    except ResourceError as e:
+        logger.error(f"Scan {scan_id} failed due to resource error: {e}")
+        scan_data["status"] = RequestStatus.FAILED
+        scan_data["error"] = f"Resource error: {str(e)}"
+        scan_data["error_type"] = "resource"
+        scan_data["user_action"] = "Please check disk space and system resources"
+        
+    except Exception as e:
+        logger.error(f"Scan {scan_id} failed with unexpected error: {e}", exc_info=True)
+        scan_data["status"] = RequestStatus.FAILED
+        scan_data["error"] = f"Unexpected error: {str(e)}"
+        scan_data["error_type"] = "unexpected"
+        scan_data["user_action"] = "Please contact support with the scan ID and error details"
+        
+    finally:
+        # Ensure completed_at is for failed scans
+        if "completed_at" not in scan_data:
+            scan_data["completed_at"] = datetime.utcnow()
+
 
 @app.get("/scan/{scan_id}/status")
 async def get_scan_status(scan_id: str):
@@ -158,7 +202,7 @@ async def get_scan_status(scan_id: str):
         
     scan_data = active_scans[scan_id]
     
-    return ScanStatus(
+    response = ScanStatus(
         scan_id=scan_id,
         status=scan_data["status"],
         started_at=scan_data["started_at"],
@@ -166,6 +210,14 @@ async def get_scan_status(scan_id: str):
         progress=scan_data["progress"],
         summary=scan_data.get("summary", {})
     )
+    
+    # Add error information for failed scans
+    if scan_data["status"] == RequestStatus.FAILED:
+        response.error = scan_data.get("error", "Unknown error")
+        response.error_type = scan_data.get("error_type", "unknown")
+        response.user_action = scan_data.get("user_action", "Please try again")
+    
+    return response
 
 @app.get("/scan/{scan_id}/results")
 async def get_scan_results(scan_id: str):
@@ -252,7 +304,8 @@ def run_server():
         "trusty_redteam.main:app",
         host=args.host,
         port=args.port,
-        reload=settings.debug
+        reload=settings.development,
+        log_level=settings.log_level.lower(),
     )
 
 if __name__ == "__main__":

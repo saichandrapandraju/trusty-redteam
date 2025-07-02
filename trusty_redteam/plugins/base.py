@@ -17,9 +17,11 @@ class BasePlugin(ABC):
     @abstractmethod
     async def run_scan(
         self,
+        scan_id: str,
         model: ModelInfo,
         scan_profile: str = "quick",
-        custom_probes: List[str] = None
+        custom_probes: List[str] = None,
+        extra_params: Dict[str, Any] = None
     ) -> AsyncIterator[TestResult]:
         """Run vulnerability scan"""
         pass
