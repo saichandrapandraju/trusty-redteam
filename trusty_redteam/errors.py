@@ -2,18 +2,18 @@ class ScanError(Exception):
     """Base exception for scan errors"""
     pass
 
-class ProcessError(ScanError):
+class ScanProcessError(ScanError):
     """Process execution related errors"""
     pass
 
-class ValidationError(ScanError):
+class ScanValidationError(ScanError):
     """Input validation errors"""
     pass
 
-class TimeoutError(ScanError):
+class ScanTimeoutError(ScanError):
     """Timeout related errors"""
     pass
 
-class ResourceError(ScanError):
+class ScanResourceError(ScanError):
     """Resource management errors"""
     pass

@@ -13,7 +13,7 @@ from trusty_redteam.config import settings
 import trusty_redteam.plugins.garak.guardrails_gateway_generator as guardrails_gateway_generator
 import os
 import shutil
-from trusty_redteam.errors import ProcessError, ValidationError, TimeoutError, ResourceError, ScanError
+from trusty_redteam.errors import ScanProcessError, ScanValidationError, ScanTimeoutError, ScanResourceError, ScanError
 from trusty_redteam.process_manager import ProcessManager, ProcessState
 import logging
 
@@ -71,12 +71,12 @@ class GarakPlugin(BasePlugin):
                 error_msg = f"Garak initialization failed (exit code {returncode})"
                 if stderr:
                     error_msg += f": {stderr.strip()}"
-                raise ProcessError(error_msg)
+                raise ScanProcessError(error_msg)
             logger.info(f"Garak initialized successfully: {stdout.strip()}")
-        except ProcessError:
+        except ScanProcessError:
             raise
         except Exception as e:
-            raise ProcessError(f"Garak not found or not executable: {str(e)}. Please ensure Garak is installed and in PATH.")
+            raise ScanProcessError(f"Garak not found or not executable: {str(e)}. Please ensure Garak is installed and in PATH.")
             
     async def run_scan(
         self,
@@ -115,7 +115,7 @@ class GarakPlugin(BasePlugin):
                     await process_manager.terminate()
                     raise
                 
-        except (ValidationError, ProcessError, TimeoutError, ResourceError) as e:
+        except (ScanValidationError, ScanProcessError, ScanTimeoutError, ScanResourceError) as e:
             logger.error(f"Scan failed: {str(e)}")
             raise
         except Exception as e:
@@ -132,7 +132,7 @@ class GarakPlugin(BasePlugin):
             return {"probes": custom_probes, "timeout": settings.plugin_configs["garak"]["timeout"]}
             
         if scan_profile not in self.SCAN_PROFILES:
-            raise ValidationError(
+            raise ScanValidationError(
                 f"Invalid scan profile: {scan_profile}. "
                 f"Valid profiles: {list(self.SCAN_PROFILES.keys())}"
             )
@@ -147,7 +147,7 @@ class GarakPlugin(BasePlugin):
             logger.info(f"Created scan directory: {scan_path}")
             return scan_path
         except Exception as e:
-            raise ResourceError(f"Failed to create scan directory: {str(e)}")
+            raise ScanResourceError(f"Failed to create scan directory: {str(e)}")
             
     async def _cleanup_scan_directory(self, scan_path: Path):
         """Clean up scan directory"""
@@ -185,7 +185,7 @@ class GarakPlugin(BasePlugin):
                     "--generations", "1" # TODO: 'n' not supported through gateway to enable multiple generations
                 ])
             else:
-                raise ValidationError(self._get_invalid_provider_error_message(model.provider))
+                raise ScanValidationError(self._get_invalid_provider_error_message(model.provider))
             
             cmd.extend([
                 "--generator_options", json.dumps(generator_options),
@@ -201,7 +201,7 @@ class GarakPlugin(BasePlugin):
             return cmd
             
         except Exception as e:
-            raise ValidationError(f"Failed to build command: {str(e)}")
+            raise ScanValidationError(f"Failed to build command: {str(e)}")
             
     async def _monitor_and_yield_results(
         self, 
@@ -225,10 +225,10 @@ class GarakPlugin(BasePlugin):
                 # Check process state
                 if process_manager.state == ProcessState.FAILED:
                     diagnostics = process_manager.get_diagnostics()
-                    raise ProcessError(f"Garak process failed. Diagnostics: {diagnostics}")
+                    raise ScanProcessError(f"Garak process failed. Diagnostics: {diagnostics}")
                     
                 if process_manager.state == ProcessState.TIMEOUT:
-                    raise TimeoutError(f"Scan timed out after {timeout}s")
+                    raise ScanTimeoutError(f"Scan timed out after {timeout}s")
                     
                 if process_manager.state == ProcessState.COMPLETED:
                     logger.info(f"Process completed, yielded {results_yielded} results")
@@ -237,7 +237,7 @@ class GarakPlugin(BasePlugin):
                 # Check timeout
                 if time.time() - start_time > timeout:
                     await process_manager.terminate()
-                    raise TimeoutError(f"Scan timed out after {timeout}s")
+                    raise ScanTimeoutError(f"Scan timed out after {timeout}s")
                     
                 # Read new results
                 try:
@@ -306,24 +306,24 @@ class GarakPlugin(BasePlugin):
         """Validate model configuration"""
         if model.provider == Provider.OPENAI_COMPATIBLE:
             if not model.endpoint or not model.endpoint.startswith("http"):
-                raise ValidationError(
+                raise ScanValidationError(
                     "Valid HTTP endpoint is required for OpenAI-compatible models. "
                     "Example: http://localhost:8080/v1"
                 )
             if not model.model_name:
-                raise ValidationError("Model name is required for OpenAI-compatible models")
+                raise ScanValidationError("Model name is required for OpenAI-compatible models")
                 
         elif model.provider == Provider.GUARDRAILS_GATEWAY:
             if not model.endpoint or not model.endpoint.startswith("http"):
-                raise ValidationError(
+                raise ScanValidationError(
                     "Valid HTTP endpoint is required for Guardrails Gateway models. "
                     "Example: http://gateway:8080/v1"
                 )
             if not model.model_name:
-                raise ValidationError("Model name is required for Guardrails Gateway models")
+                raise ScanValidationError("Model name is required for Guardrails Gateway models")
                 
         else:
-            raise ValidationError(self._get_invalid_provider_error_message(model.provider))
+            raise ScanValidationError(self._get_invalid_provider_error_message(model.provider))
             
         # Normalize endpoint
         if model.endpoint.endswith("/"):
@@ -374,12 +374,12 @@ class GarakPlugin(BasePlugin):
                 generator_options["function"]["Single"]["kwargs"].update(extra_params)
                 
             else:
-                raise ValidationError(self._get_invalid_provider_error_message(model.provider))
+                raise ScanValidationError(self._get_invalid_provider_error_message(model.provider))
                 
             return generator_options
             
         except Exception as e:
-            raise ValidationError(f"Failed to create generator options: {str(e)}")
+            raise ScanValidationError(f"Failed to create generator options: {str(e)}")
 
     def _convert_attempt_to_result(self, entry: dict) -> TestResult:
         """Convert attempt entry to TestResult"""
@@ -462,9 +462,9 @@ class GarakPlugin(BasePlugin):
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-            raise TimeoutError(f"Command timed out after {timeout}s")
+            raise ScanTimeoutError(f"Command timed out after {timeout}s")
         except Exception as e:
-            raise ProcessError(f"Command execution failed: {str(e)}")
+            raise ScanProcessError(f"Command execution failed: {str(e)}")
         
     def get_info(self) -> PluginInfo:
         """Get plugin information"""

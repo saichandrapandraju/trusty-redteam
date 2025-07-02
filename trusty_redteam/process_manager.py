@@ -6,7 +6,8 @@ import signal
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from trusty_redteam.schemas import ProcessState
-from trusty_redteam.errors import ProcessError, ValidationError, TimeoutError
+from trusty_redteam.errors import ScanProcessError, ScanValidationError, ScanTimeoutError
+from asyncio import StreamReader
 logger = logging.getLogger(__name__)
 
 class ProcessManager:
@@ -36,7 +37,7 @@ class ProcessManager:
             
             # Validate command
             if not cmd or not cmd[0]:
-                raise ValidationError("Empty command provided")
+                raise ScanValidationError("Empty command provided")
                 
             # Create process
             self.process = await asyncio.create_subprocess_exec(
@@ -56,77 +57,57 @@ class ProcessManager:
             
         except FileNotFoundError as e:
             self.state = ProcessState.FAILED
-            raise ProcessError(f"Command not found: {cmd[0]}. Please ensure Garak is installed and in PATH.") from e
+            raise ScanProcessError(f"Command not found: {cmd[0]}. Please ensure Garak is installed and in PATH.") from e
         except PermissionError as e:
             self.state = ProcessState.FAILED
-            raise ProcessError(f"Permission denied executing: {cmd[0]}. Check file permissions.") from e
+            raise ScanProcessError(f"Permission denied executing: {cmd[0]}. Check file permissions.") from e
         except Exception as e:
             self.state = ProcessState.FAILED
-            raise ProcessError(f"Failed to start process: {str(e)}") from e
+            raise ScanProcessError(f"Failed to start process: {str(e)}") from e
             
     def _start_monitoring_tasks(self):
         """Start background tasks for monitoring process output"""
         if self.process:
             self._cleanup_tasks.append(
-                asyncio.create_task(self._monitor_stdout())
+                asyncio.create_task(self._monitor_stream(self.process.stdout, self.stdout_buffer, "stdout"))
             )
             self._cleanup_tasks.append(
-                asyncio.create_task(self._monitor_stderr())
+                asyncio.create_task(self._monitor_stream(self.process.stderr, self.stderr_buffer, "stderr"))
             )
-            
-    async def _monitor_stdout(self):
-        """Monitor and log stdout"""
-        if not self.process or not self.process.stdout:
+
+    async def _monitor_stream(self, stream:StreamReader, buffer:list, stream_name:str):
+        """Generic stream monitoring method"""
+        if not stream:
             return
             
         try:
             while True:
-                line = await self.process.stdout.readline()
+                line = await stream.readline()
                 if not line:
                     break
                     
                 decoded_line = line.decode().strip()
-                self.stdout_buffer.append(decoded_line)
+                buffer.append(decoded_line)
                 
                 # Keep buffer size manageable
-                if len(self.stdout_buffer) > 1000:
-                    self.stdout_buffer = self.stdout_buffer[-500:]
+                if len(buffer) > 1000:
+                    buffer[:] = buffer[-500:]
                     
-                logger.debug(f"[{self.scan_id}] STDOUT: {decoded_line}")
-                
-        except Exception as e:
-            logger.warning(f"[{self.scan_id}] Error monitoring stdout: {e}")
-            
-    async def _monitor_stderr(self):
-        """Monitor and log stderr"""
-        if not self.process or not self.process.stderr:
-            return
-            
-        try:
-            while True:
-                line = await self.process.stderr.readline()
-                if not line:
-                    break
-                    
-                decoded_line = line.decode().strip()
-                self.stderr_buffer.append(decoded_line)
-                
-                # Keep buffer size manageable
-                if len(self.stderr_buffer) > 1000:
-                    self.stderr_buffer = self.stderr_buffer[-500:]
-                    
-                # Log warnings and errors from Garak
-                if any(keyword in decoded_line.lower() 
-                       for keyword in ['error', 'warning', 'exception', 'failed']):
-                    logger.warning(f"[{self.scan_id}] STDERR: {decoded_line}")
+                # Special handling for stderr
+                if stream_name == "stderr" and any(keyword in decoded_line.lower() 
+                                                for keyword in ['error', 'warning', 'exception', 'failed']):
+                    logger.warning(f"[{self.scan_id}] {stream_name.upper()}: {decoded_line}")
                 else:
-                    logger.debug(f"[{self.scan_id}] STDERR: {decoded_line}")
+                    logger.debug(f"[{self.scan_id}] {stream_name.upper()}: {decoded_line}")
                     
         except Exception as e:
-            logger.warning(f"[{self.scan_id}] Error monitoring stderr: {e}")
+            logger.warning(f"[{self.scan_id}] Error monitoring {stream_name}: {e}")
 
     def check_process_completion(self):
         """Check if process has completed and update state accordingly"""
+        if not self.process:
+            return
+        
         # Check if process has terminated
         if self.process.returncode is not None:
             if self.state == ProcessState.RUNNING:  # Only update if currently running
@@ -140,7 +121,6 @@ class ProcessManager:
                     error_output = '\n'.join(self.stderr_buffer[-5:]) if self.stderr_buffer else "No error output"
                     logger.error(f"[{self.scan_id}] Process failed with return code {self.process.returncode}. Recent errors: {error_output}")
 
-    
     def is_completed(self) -> bool:
         """Check if process is completed (success or failure)"""
         return self.state in [ProcessState.COMPLETED, ProcessState.FAILED, ProcessState.TIMEOUT, ProcessState.CANCELLED]
@@ -153,7 +133,7 @@ class ProcessManager:
     async def wait_for_completion(self, timeout: int = None) -> Tuple[int, str]:
         """Wait for process completion with timeout"""
         if not self.process:
-            raise ProcessError("Process not started")
+            raise ScanProcessError("Process not started")
             
         try:
             if timeout:
@@ -180,7 +160,7 @@ class ProcessManager:
         except asyncio.TimeoutError:
             self.state = ProcessState.TIMEOUT
             await self.terminate()
-            raise TimeoutError(f"Process timed out after {timeout}s")
+            raise ScanTimeoutError(f"Process timed out after {timeout}s")
             
     async def terminate(self):
         """Gracefully terminate the process"""

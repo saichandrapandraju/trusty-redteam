@@ -14,8 +14,8 @@ from trusty_redteam.schemas import (
     ScanResult, RequestStatus, TestResult
 )
 from trusty_redteam.errors import (
-    ProcessError, ValidationError, 
-    TimeoutError, ResourceError)
+    ScanProcessError, ScanValidationError, 
+    ScanTimeoutError, ScanResourceError)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -153,28 +153,28 @@ async def run_scan_task(scan_id: str, plugin: BasePlugin, request: ScanRequest):
         
         logger.info(f"Scan {scan_id} completed successfully with {result_count} results")
         
-    except ValidationError as e:
+    except ScanValidationError as e:
         logger.error(f"Scan {scan_id} failed due to validation error: {e}")
         scan_data["status"] = RequestStatus.FAILED
         scan_data["error"] = f"Configuration error: {str(e)}"
         scan_data["error_type"] = "validation"
         scan_data["user_action"] = "Please check your model configuration and scan parameters"
         
-    except ProcessError as e:
+    except ScanProcessError as e:
         logger.error(f"Scan {scan_id} failed due to process error: {e}")
         scan_data["status"] = RequestStatus.FAILED
         scan_data["error"] = f"Process error: {str(e)}"
         scan_data["error_type"] = "process"
         scan_data["user_action"] = "Please ensure Garak is properly installed and your model endpoint is accessible"
         
-    except TimeoutError as e:
+    except ScanTimeoutError as e:
         logger.error(f"Scan {scan_id} timed out: {e}")
         scan_data["status"] = RequestStatus.FAILED
         scan_data["error"] = f"Scan timed out: {str(e)}"
         scan_data["error_type"] = "timeout"
         scan_data["user_action"] = "Consider using a shorter scan profile or increasing timeout settings"
         
-    except ResourceError as e:
+    except ScanResourceError as e:
         logger.error(f"Scan {scan_id} failed due to resource error: {e}")
         scan_data["status"] = RequestStatus.FAILED
         scan_data["error"] = f"Resource error: {str(e)}"
